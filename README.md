@@ -1,275 +1,350 @@
-# 🍕 Food Delivery Time Prediction - Regression Analysis
+# ⏱️ Food Delivery Time Prediction - Regression ML
 
-A **machine learning project predicting food delivery time** based on restaurant features, order characteristics, and delivery partner metrics.
+A **machine learning regression system** for predicting food delivery times using time series analysis, gradient boosting, and feature engineering.
 
 ## 🎯 Overview
 
-This project covers:
-- ✅ Delivery time prediction
-- ✅ Distance and route analysis
-- ✅ Time-of-day features
-- ✅ Restaurant & order features
-- ✅ Traffic pattern modeling
-- ✅ Delivery partner performance
+This project includes:
+- ✅ Delivery data collection
+- ✅ Feature engineering
+- ✅ Regression models
+- ✅ Time series analysis
+- ✅ Real-time predictions
+- ✅ Performance metrics
+- ✅ Optimization pipeline
 
-## 📊 Delivery Dataset
+## 📦 Data Collection & Preprocessing
 
 ```python
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-from haversine import haversine
+from datetime import datetime, timedelta
 
-class FoodDeliveryAnalysis:
-    """Analyze delivery data"""
+class DeliveryDataCollector:
+    """Collect delivery data"""
     
-    def __init__(self, filepath='food_delivery.csv'):
-        self.df = pd.read_csv(filepath)
+    def __init__(self):
+        self.data = None
     
-    def explore_data(self):
-        """Dataset overview"""
-        print(f"Total deliveries: {len(self.df)}")
-        print(f"\nDelivery time statistics (minutes):")
-        print(self.df['Delivery_Time'].describe())
+    def load_deliveries(self, filepath):
+        """Load delivery records"""
+        self.data = pd.read_csv(filepath)
+        self.data['order_time'] = pd.to_datetime(self.data['order_time'])
+        self.data['delivery_time'] = pd.to_datetime(self.data['delivery_time'])
         
-        print(f"\nDistance statistics (km):")
-        print(self.df['Distance_km'].describe())
+        return self.data
     
-    def delivery_performance_metrics(self):
-        """Analyze performance"""
-        # On-time delivery rate
-        on_time = (self.df['Delivery_Time'] <= 30).sum() / len(self.df)
-        print(f"On-time delivery rate (≤30 min): {on_time*100:.2f}%")
+    def calculate_delivery_duration(self):
+        """Calculate time taken"""
+        df = self.data.copy()
         
-        # Average by restaurant type
-        by_type = self.df.groupby('Restaurant_Type')['Delivery_Time'].mean()
-        print(f"\nAverage delivery time by restaurant:\n{by_type}")
+        df['delivery_duration_minutes'] = (
+            (df['delivery_time'] - df['order_time']).dt.total_seconds() / 60
+        )
         
-        # By time of day
-        by_hour = self.df.groupby(self.df['Datetime'].dt.hour)['Delivery_Time'].mean()
-        print(f"\nDelivery time by hour:\n{by_hour}")
-```
-
-## 🔧 Feature Engineering
-
-```python
-from datetime import datetime
-import math
-
-class DeliveryFeatureEngineer:
-    """Create delivery features"""
+        return df
     
-    @staticmethod
-    def distance_features(df):
-        """Calculate distance metrics"""
-        df_copy = df.copy()
-        
-        # Haversine distance if coordinates available
-        if 'Restaurant_Latitude' in df_copy.columns:
-            df_copy['Calculated_Distance'] = df_copy.apply(
-                lambda row: haversine(
-                    (row['Restaurant_Latitude'], row['Restaurant_Longitude']),
-                    (row['Delivery_Latitude'], row['Delivery_Longitude'])
-                ) if pd.notna(row['Restaurant_Latitude']) else np.nan,
-                axis=1
-            )
-        
-        return df_copy
-    
-    @staticmethod
-    def temporal_features(df):
+    def extract_temporal_features(self):
         """Extract time-based features"""
-        df_copy = df.copy()
+        df = self.data.copy()
         
-        df_copy['Datetime'] = pd.to_datetime(df_copy['Datetime'])
-        df_copy['Hour'] = df_copy['Datetime'].dt.hour
-        df_copy['DayOfWeek'] = df_copy['Datetime'].dt.dayofweek
-        df_copy['Month'] = df_copy['Datetime'].dt.month
+        # Time of day
+        df['order_hour'] = df['order_time'].dt.hour
+        df['order_day'] = df['order_time'].dt.dayofweek
+        df['order_month'] = df['order_time'].dt.month
         
-        # Peak hours (lunch 11-2, dinner 6-9)
-        df_copy['IsPeakHour'] = df_copy['Hour'].isin([11, 12, 13, 18, 19, 20, 21]).astype(int)
+        # Is peak hours? (lunch/dinner)
+        df['is_peak_hours'] = ((df['order_hour'] >= 12) & (df['order_hour'] <= 14)) | \
+                              ((df['order_hour'] >= 19) & (df['order_hour'] <= 21))
         
-        # Time to delivery (morning, afternoon, evening, night)
-        df_copy['TimeOfDay'] = pd.cut(df_copy['Hour'], bins=[0, 12, 17, 21, 24],
-                                      labels=[0, 1, 2, 3], right=False)
+        # Is weekend
+        df['is_weekend'] = df['order_day'].isin([5, 6]).astype(int)
         
-        return df_copy
+        # Hour sin/cos for cyclical encoding
+        df['hour_sin'] = np.sin(2 * np.pi * df['order_hour'] / 24)
+        df['hour_cos'] = np.cos(2 * np.pi * df['order_hour'] / 24)
+        
+        return df
     
-    @staticmethod
-    def order_features(df):
-        """Order-level features"""
-        df_copy = df.copy()
+    def extract_distance_features(self):
+        """Calculate distance metrics"""
+        df = self.data.copy()
         
-        # Number of items (proxy for order complexity)
-        df_copy['Order_Items_Count'] = df_copy['Number_of_Items']
+        # Haversine distance
+        def haversine(lat1, lon1, lat2, lon2):
+            R = 6371  # Earth radius in km
+            
+            dlat = np.radians(lat2 - lat1)
+            dlon = np.radians(lon2 - lon1)
+            
+            a = np.sin(dlat/2)**2 + np.cos(np.radians(lat1)) * np.cos(np.radians(lat2)) * np.sin(dlon/2)**2
+            c = 2 * np.arcsin(np.sqrt(a))
+            
+            return R * c
         
-        # Order value impact
-        df_copy['Order_Value_Category'] = pd.cut(df_copy['Order_Value'],
-                                                  bins=[0, 250, 500, 1000, 5000],
-                                                  labels=[0, 1, 2, 3])
+        df['distance_km'] = haversine(
+            df['restaurant_lat'], df['restaurant_lon'],
+            df['delivery_lat'], df['delivery_lon']
+        )
         
-        return df_copy
+        # Distance category
+        df['distance_category'] = pd.cut(df['distance_km'],
+                                        bins=[0, 2, 5, 10, 50],
+                                        labels=['nearby', 'close', 'moderate', 'far'])
+        
+        return df
     
-    @staticmethod
-    def delivery_partner_features(df):
-        """Partner performance metrics"""
-        df_copy = df.copy()
+    def extract_restaurant_features(self):
+        """Restaurant-based features"""
+        df = self.data.copy()
         
-        # Partner experience (number of deliveries)
-        df_copy['Partner_Experience'] = df_copy['Partner_Number_of_deliveries']
+        # Restaurant average preparation time
+        prep_times = df.groupby('restaurant_id')['preparation_time_minutes'].transform('mean')
+        df['restaurant_avg_prep_time'] = prep_times
         
-        # Partner rating
-        df_copy['Partner_Rating'] = df_copy['Delivery_partner_rating']
+        # Restaurant delivery count (proxy for efficiency)
+        delivery_counts = df.groupby('restaurant_id').size().transform('count')
+        df['restaurant_delivery_count'] = delivery_counts
         
-        # Partner age group
-        df_copy['Partner_Age_Log'] = np.log1p(df_copy['Delivery_partner_age'])
+        # Restaurant rating
+        if 'restaurant_rating' in df.columns:
+            df['high_rated_restaurant'] = (df['restaurant_rating'] >= 4.5).astype(int)
         
-        return df_copy
+        return df
+    
+    def create_lag_features(self):
+        """Create lag features for time series"""
+        df = self.data.copy()
+        
+        # Sort by time
+        df = df.sort_values('order_time')
+        
+        # Rolling averages for delivery time
+        df['delivery_time_ma7'] = df['delivery_duration_minutes'].rolling(7).mean()
+        df['delivery_time_ma30'] = df['delivery_duration_minutes'].rolling(30).mean()
+        
+        # Lag features
+        for lag in [1, 7, 24]:
+            df[f'delivery_time_lag{lag}h'] = df['delivery_duration_minutes'].shift(lag)
+        
+        return df
 ```
 
-## 🤖 Regression Models
+## 🧠 Regression Models
 
 ```python
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import LinearRegression, Ridge
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import cross_val_score
 
 class DeliveryTimeRegressor:
     """Predict delivery time"""
     
     def __init__(self):
-        self.scaler = StandardScaler()
-        self.models = self._build_models()
+        self.models = {}
         self.best_model = None
     
-    def _build_models(self):
-        """Initialize models"""
-        return {
-            'Linear Regression': LinearRegression(),
-            'Ridge Regression': Ridge(alpha=10.0),
-            'Random Forest': RandomForestRegressor(n_estimators=100, max_depth=20, random_state=42),
-            'Gradient Boosting': GradientBoostingRegressor(n_estimators=100, learning_rate=0.05, random_state=42)
-        }
+    def linear_regression(self, X_train, y_train):
+        """Baseline regression"""
+        lr = LinearRegression()
+        lr.fit(X_train, y_train)
+        self.models['lr'] = lr
+        
+        return lr
     
-    def train_all(self, X_train, y_train):
-        """Train all models"""
-        trained = {}
+    def ridge_regression(self, X_train, y_train, alpha=1.0):
+        """Ridge with L2 regularization"""
+        ridge = Ridge(alpha=alpha)
+        ridge.fit(X_train, y_train)
+        self.models['ridge'] = ridge
         
-        X_scaled = self.scaler.fit_transform(X_train)
-        
-        for name, model in self.models.items():
-            if name in ['Linear Regression', 'Ridge Regression']:
-                model.fit(X_scaled, y_train)
-            else:
-                model.fit(X_train, y_train)
-            
-            trained[name] = model
-        
-        self.models = trained
-        return trained
+        return ridge
     
-    def estimate_delivery_time(self, features):
-        """Predict delivery time"""
-        # Aggregate predictions from multiple models
-        predictions = []
+    def gradient_boosting_regressor(self, X_train, y_train):
+        """Gradient Boosting for regression"""
+        gbr = GradientBoostingRegressor(
+            n_estimators=100,
+            learning_rate=0.1,
+            max_depth=7,
+            min_samples_split=5,
+            subsample=0.8,
+            random_state=42
+        )
         
-        for model in self.models.values():
-            pred = model.predict(features.reshape(1, -1))
-            predictions.append(pred[0])
+        gbr.fit(X_train, y_train)
+        self.models['gbr'] = gbr
         
-        # Average prediction
-        avg_time = np.mean(predictions)
+        return gbr
+    
+    def random_forest_regressor(self, X_train, y_train):
+        """Random Forest regression"""
+        rf_reg = RandomForestRegressor(
+            n_estimators=100,
+            max_depth=15,
+            min_samples_split=5,
+            random_state=42,
+            n_jobs=-1
+        )
         
-        # Add buffer for reliability
-        estimated_time = avg_time * 1.1  # 10% buffer
+        rf_reg.fit(X_train, y_train)
+        self.models['rf_reg'] = rf_reg
         
-        return {
-            'Prediction': avg_time,
-            'Estimated_with_buffer': estimated_time,
-            'Confidence_Range': (avg_time * 0.85, avg_time * 1.15)
-        }
+        return rf_reg
+    
+    def xgboost_regressor(self, X_train, y_train):
+        """XGBoost for fast boosting"""
+        import xgboost as xgb
+        
+        xgb_reg = xgb.XGBRegressor(
+            n_estimators=100,
+            learning_rate=0.1,
+            max_depth=7,
+            random_state=42,
+            tree_method='hist'
+        )
+        
+        xgb_reg.fit(X_train, y_train)
+        self.models['xgb'] = xgb_reg
+        
+        return xgb_reg
+    
+    def predict_delivery_time(self, features):
+        """Predict time for single order"""
+        if self.best_model is None:
+            raise ValueError("Model not trained")
+        
+        predicted_time = self.best_model.predict([features])[0]
+        
+        return max(0, predicted_time)  # Ensure non-negative
 ```
 
-## 📊 Model Evaluation
+## 📊 Evaluation Metrics
 
 ```python
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-class DeliveryEvaluator:
-    """Evaluate prediction models"""
+class DeliveryMetricsEvaluator:
+    """Evaluate regression performance"""
     
     @staticmethod
-    def regression_metrics(y_true, y_pred):
+    def evaluate(y_true, y_pred):
         """Calculate metrics"""
         mae = mean_absolute_error(y_true, y_pred)
         rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-        r2 = r2_score(y_true, y_pred)
         mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+        r2 = r2_score(y_true, y_pred)
         
         return {
-            'MAE (minutes)': round(mae, 2),
-            'RMSE (minutes)': round(rmse, 2),
-            'MAPE (%)': round(mape, 2),
-            'R²': round(r2, 4)
+            'MAE': mae,
+            'RMSE': rmse,
+            'MAPE': mape,
+            'R2': r2
         }
     
     @staticmethod
-    def model_comparison(y_true, predictions_dict):
-        """Compare models"""
-        results = {}
+    def prediction_accuracy(y_true, y_pred, tolerance_minutes=5):
+        """% predictions within tolerance"""
+        absolute_errors = np.abs(y_true - y_pred)
+        within_tolerance = np.sum(absolute_errors <= tolerance_minutes)
         
-        for model_name, y_pred in predictions_dict.items():
-            results[model_name] = DeliveryEvaluator.regression_metrics(y_true, y_pred)
+        accuracy = (within_tolerance / len(y_true)) * 100
         
-        comparison_df = pd.DataFrame(results).T
-        print("\nModel Performance Comparison:")
-        print(comparison_df.sort_values('R²', ascending=False))
-        
-        return comparison_df
+        return accuracy
     
     @staticmethod
-    def prediction_distribution(y_true, y_pred):
-        """Analyze prediction accuracy"""
-        errors = y_true - y_pred
+    def underestimation_rate(y_true, y_pred):
+        """% predictions lower than actual"""
+        underestimated = np.sum(y_pred < y_true)
         
-        print(f"Mean prediction error: {np.mean(errors):.2f} minutes")
-        print(f"Std dev of errors: {np.std(errors):.2f} minutes")
-        print(f"% predictions within ±5 min: {(np.abs(errors) <= 5).sum() / len(errors) * 100:.2f}%")
+        rate = (underestimated / len(y_true)) * 100
+        
+        return rate
+```
+
+## ⏳ Real-time Prediction Pipeline
+
+```python
+class DeliveryPredictionPipeline:
+    """End-to-end prediction system"""
+    
+    def __init__(self, model, scaler, feature_names):
+        self.model = model
+        self.scaler = scaler
+        self.feature_names = feature_names
+    
+    def predict_order_delivery(self, order_details):
+        """Predict delivery time for new order"""
+        # Extract features
+        features = self.extract_order_features(order_details)
+        
+        # Scale
+        features_scaled = self.scaler.transform([features])
+        
+        # Predict
+        predicted_minutes = self.model.predict(features_scaled)[0]
+        predicted_minutes = max(10, predicted_minutes)  # Minimum 10 min
+        
+        # Convert to datetime
+        estimated_delivery = order_details['order_time'] + timedelta(minutes=predicted_minutes)
+        
+        return {
+            'predicted_minutes': predicted_minutes,
+            'estimated_delivery_time': estimated_delivery,
+            'confidence_interval': self.get_confidence_interval(predicted_minutes)
+        }
+    
+    def extract_order_features(self, order_dict):
+        """Extract features from order"""
+        features = []
+        for fname in self.feature_names:
+            if fname in order_dict:
+                features.append(order_dict[fname])
+        
+        return np.array(features)
+    
+    def get_confidence_interval(self, prediction):
+        """Calculate 95% CI"""
+        margin = prediction * 0.2  # 20% margin
+        
+        return {
+            'lower': max(0, prediction - margin),
+            'upper': prediction + margin
+        }
 ```
 
 ## 💡 Interview Talking Points
 
-**Q: Key factors affecting delivery time?**
+**Q: Time series challenges?**
 ```
 Answer:
-- Distance to delivery location (most important)
-- Time of day (peak hours slower)
-- Order complexity (number of items)
-- Delivery partner experience
-- Weather/traffic conditions
-- Restaurant preparation time
+- Stationarity vs trend
+- Seasonality patterns (peak hours)
+- Lag features important
+- ARIMA vs ML approach
+- Recursive vs direct prediction
 ```
 
-**Q: Handle outliers/unusual cases?**
+**Q: Why underestimate problematic?**
 ```
 Answer:
-- Identify outliers (far deliveries, very long times)
-- Separate model for them or robust loss
-- Weather impact correction
-- Traffic incident flagging
+- Customer satisfaction decrease
+- Restaurant reputation risk
+- Model credibility loss
+- Can overestimate slightly (~10%)
+- Cost of wrong forecast
 ```
 
 ## 🌟 Portfolio Value
 
-✅ Food delivery domain knowledge
-✅ Geospatial distance calculations
-✅ Time-series patterns
-✅ Feature engineering (complex)
 ✅ Regression modeling
-✅ Real-world delivery logistics
-✅ Performance metrics
+✅ Time series analysis
+✅ Feature engineering
+✅ Multi-model comparison
+✅ Real-world application
+✅ Performance forecasting
+✅ Business impact metrics
 
 ---
 
-**Technologies**: Scikit-learn, Pandas, NumPy, Haversine
+**Technologies**: Scikit-learn, XGBoost, Pandas
 
